@@ -2,7 +2,7 @@ pipeline {
 	agent any
 
 	environment {
-		DOCKER_IMAGE = "dockerhub_user/library-api:latest"
+		DOCKER_IMAGE = "papesembene/library-api:latest"
 		SPRING_DATASOURCE_URL = credentials('SUPABASE_URL')
 		SPRING_DATASOURCE_USERNAME = credentials('SUPABASE_USERNAME')
 		SPRING_DATASOURCE_PASSWORD = credentials('SUPABASE_PASSWORD')
@@ -18,6 +18,11 @@ pipeline {
 		}
 
 		stage('Build Maven') {
+			agent {
+				docker {
+					image 'maven:3.9.5-openjdk-17'
+				}
+			}
 			steps {
 				sh 'mvn clean package -DskipTests'
 			}
