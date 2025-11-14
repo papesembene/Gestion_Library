@@ -1,0 +1,7 @@
+target/
+*.log
+*.class
+*.jar
+*.iml
+.idea/
+.git/
