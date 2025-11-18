@@ -17,7 +17,7 @@ pipeline {
     stage('Setup Environment') {
       steps {
         sh '''
-          apt-get update
+          apt-get update && apt-get upgrade -y
           apt-get install -y openjdk-17-jdk maven curl docker.io
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
