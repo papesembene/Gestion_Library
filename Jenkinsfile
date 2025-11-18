@@ -1,7 +1,7 @@
 pipeline {
   agent {
     docker {
-      image 'openjdk:17-jdk-slim'
+      image 'maven:3.9.4-openjdk-17-slim'
       args '-u root -v /var/run/docker.sock:/var/run/docker.sock'
     }
   }
@@ -19,7 +19,7 @@ pipeline {
   }
 
   stages {
-    stage('Setup Tools') {
+    stage('Setup kubectl') {
       steps {
         sh '''
           apt-get update && apt-get install -y curl docker.io
@@ -27,7 +27,6 @@ pipeline {
           chmod +x kubectl
           mv kubectl /usr/local/bin/
           kubectl version --client
-          docker --version
         '''
       }
     }
