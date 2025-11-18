@@ -33,5 +33,11 @@ build/
 ### VS Code ###
 .vscode/
 
+# Environment
+.env
 
-.envkubeconfig-prod
+# Kubernetes secrets (sensitive data)
+k8s/secrets.yaml
+
+# Kubeconfig (sensitive)
+kubeconfig-prod
