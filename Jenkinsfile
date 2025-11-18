@@ -4,6 +4,13 @@ pipeline {
   environment {
     DOCKER_IMAGE = "papesembene/library-api:${env.GIT_COMMIT}"
     KUBE_NAMESPACE = "library"
+    SPRING_DATASOURCE_URL = credentials('db-url')
+    SPRING_DATASOURCE_USERNAME = credentials('db-username')
+    SPRING_DATASOURCE_PASSWORD = credentials('db-password')
+    JWT_SECRET = credentials('jwt-secret')
+    SERVER_PORT = "8080"
+    DB_POOL_SIZE = "10"
+    JWT_EXPIRATION = "3600000"
   }
 
   stages {
