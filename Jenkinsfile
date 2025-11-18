@@ -58,35 +58,40 @@ pipeline {
             }
         }
 
-        stage('Deploy to Kubernetes') {
-            environment {
-                SPRING_DATASOURCE_URL = credentials('db-url')
-                SPRING_DATASOURCE_USERNAME = credentials('db-username')
-                SPRING_DATASOURCE_PASSWORD = credentials('db-password')
-                JWT_SECRET = credentials('jwt-secret')
-            }
+        stage('🚀 Deploy to Kubernetes') {
             steps {
-                withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                    sh """
-                        # Install kubectl if not present
-                        if ! command -v kubectl &> /dev/null; then
-                            echo "Installing kubectl..."
-                            curl -LO "https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-                            chmod +x kubectl
-                            mv kubectl /usr/local/bin/
-                            echo "kubectl installed successfully"
-                        else
-                            echo "kubectl already installed"
-                        fi
+                script {
+                    // Installer kubectl si absent
+                    sh '''
+                    if ! command -v kubectl &> /dev/null; then
+                        echo "Installing kubectl..."
+                        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                        chmod +x kubectl
+                        mv kubectl /usr/local/bin/
+                        echo "kubectl installed successfully"
+                    fi
+                    '''
 
-                        # Deploy to Kubernetes
-                        kubectl apply -f k8s/
-                        kubectl set image deployment/${APP_NAME}-deployment ${APP_NAME}=docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} -n ${KUBE_NAMESPACE} --record
-                        kubectl rollout status deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} --timeout=600s
-                    """
+                    // Déployer le namespace et le secret
+                    sh '''
+                    kubectl apply -f k8s/namespace.yaml
+                    kubectl apply -f k8s/secrets.yaml --validate=false
+                    '''
+
+                    // Déployer le service et le déploiement
+                    sh '''
+                    kubectl apply -f k8s/service.yaml
+                    kubectl apply -f k8s/deployment.yaml
+                    kubectl set image deployment/library-api-deployment \
+                        library-api=docker.io/papesembene/library-api:${GIT_COMMIT} \
+                        -n library --record
+                    kubectl rollout status deployment/library-api-deployment \
+                        -n library --timeout=600s
+                    '''
                 }
             }
         }
+
 
     }
 
