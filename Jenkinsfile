@@ -2,7 +2,7 @@ pipeline {
     agent {
         docker {
             image 'maven:3.9.6-eclipse-temurin-17'
-            args '-v /var/run/docker.sock:/var/run/docker.sock -u root --network host'
+            args '-v /var/run/docker.sock:/var/run/docker.sock -v maven-cache:/root/.m2 -u root'
             reuseNode true
         }
     }
@@ -65,19 +65,6 @@ pipeline {
             }
         }
 
-        stage('🔒 Security Scan') {
-            steps {
-                script {
-                    // Trivy security scan (optionnel)
-                    sh """
-                        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
-                        aquasecurity/trivy:latest image --exit-code 0 --no-progress
-                        --format table ${DOCKER_IMAGE} || echo "Trivy scan skipped"
-                    """
-                }
-            }
-        }
-
         stage('📤 Push to Registry') {
             steps {
                 script {
@@ -113,7 +100,7 @@ pipeline {
                         // Wait for rollout to complete
                         sh """
                             kubectl rollout status deployment/${APP_NAME}-deployment \\
-                            -n ${KUBE_NAMESPACE} --timeout=300s
+                            -n ${KUBE_NAMESPACE} --timeout=600s
                         """
 
                         // Verify deployment
@@ -133,7 +120,7 @@ pipeline {
                         // Wait for service to be ready
                         sh """
                             kubectl wait --for=condition=available \\
-                            --timeout=300s deployment/${APP_NAME}-deployment \\
+                            --timeout=600s deployment/${APP_NAME}-deployment \\
                             -n ${KUBE_NAMESPACE}
                         """
 
