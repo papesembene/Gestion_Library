@@ -9,7 +9,7 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update  # dev/proto ; pour prod tu mettras validate
+      ddl-auto: validate  # Production setting - no schema changes
     show-sql: false
     properties:
       hibernate:
