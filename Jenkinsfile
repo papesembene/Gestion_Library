@@ -1,10 +1,5 @@
 pipeline {
-  agent {
-    docker {
-      image 'maven:3.9.4-openjdk-17-slim'
-      args '-u root -v /var/run/docker.sock:/var/run/docker.sock'
-    }
-  }
+  agent any
 
   environment {
     DOCKER_IMAGE = "papesembene/library-api:${env.GIT_COMMIT}"
@@ -19,14 +14,18 @@ pipeline {
   }
 
   stages {
-    stage('Setup kubectl') {
+    stage('Setup Environment') {
       steps {
         sh '''
-          apt-get update && apt-get install -y curl docker.io
+          apt-get update
+          apt-get install -y openjdk-17-jdk maven curl docker.io
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
           mv kubectl /usr/local/bin/
+          java -version
+          mvn --version
           kubectl version --client
+          docker --version
         '''
       }
     }
