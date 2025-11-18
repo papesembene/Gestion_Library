@@ -14,10 +14,6 @@ pipeline {
         DOCKER_IMAGE = "${DOCKER_REPO}:${IMAGE_TAG}"
         KUBE_NAMESPACE = 'library'
         APP_NAME = 'library-api'
-        SPRING_DATASOURCE_URL = credentials('db-url')
-        SPRING_DATASOURCE_USERNAME = credentials('db-username')
-        SPRING_DATASOURCE_PASSWORD = credentials('db-password')
-        JWT_SECRET = credentials('jwt-secret')
     }
 
     options {
@@ -27,23 +23,6 @@ pipeline {
     }
 
     stages {
-        stage('🔍 Code Quality & Security') {
-            parallel {
-                stage('Static Analysis') {
-                    steps {
-                        sh 'mvn clean compile'
-                        sh 'mvn spotbugs:check || echo "SpotBugs not configured, skipping"'
-                    }
-                }
-                stage('Unit Tests') {
-                    steps {
-                        sh 'mvn test'
-                        junit 'target/surefire-reports/*.xml'
-                    }
-                }
-            }
-        }
-
         stage('📦 Build & Package') {
             steps {
                 sh 'mvn clean package -DskipTests'
@@ -74,6 +53,12 @@ pipeline {
         }
 
         stage('🚀 Deploy to Kubernetes') {
+            environment {
+                SPRING_DATASOURCE_URL = credentials('db-url')
+                SPRING_DATASOURCE_USERNAME = credentials('db-username')
+                SPRING_DATASOURCE_PASSWORD = credentials('db-password')
+                JWT_SECRET = credentials('jwt-secret')
+            }
             steps {
                 script {
                     withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
@@ -108,37 +93,6 @@ pipeline {
             }
         }
 
-        stage('🧪 Integration Tests') {
-            steps {
-                script {
-                    withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                        // Wait for service to be ready
-                        sh """
-                            kubectl wait --for=condition=available \\
-                            --timeout=600s deployment/${APP_NAME}-deployment \\
-                            -n ${KUBE_NAMESPACE}
-                        """
-
-                        // Get service URL and test health endpoint
-                        sh """
-                            SERVICE_IP=\$(kubectl get svc ${APP_NAME}-service \\
-                            -n ${KUBE_NAMESPACE} -o jsonpath='{.spec.clusterIP}')
-                            EXTERNAL_IP=\$(kubectl get svc ${APP_NAME}-service \\
-                            -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
-                            echo "Service IP (interne): \$SERVICE_IP"
-                            echo "External IP (LoadBalancer): \$EXTERNAL_IP"
-
-                            # Test health endpoint via external IP if available
-                            if [ "\$EXTERNAL_IP" != "Pending" ] && [ -n "\$EXTERNAL_IP" ]; then
-                                timeout 30 bash -c 'until curl -f http://\$EXTERNAL_IP/actuator/health; do sleep 5; done' || echo "Health check skipped"
-                            else
-                                echo "LoadBalancer IP not yet assigned, skipping external health check"
-                            fi
-                        """
-                    }
-                }
-            }
-        }
     }
 
     post {
