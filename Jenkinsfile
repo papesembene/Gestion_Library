@@ -60,38 +60,39 @@ pipeline {
 
         stage('🚀 Deploy to Kubernetes') {
             steps {
-                script {
-                    // Installer kubectl si absent
-                    sh '''
-                    if ! command -v kubectl &> /dev/null; then
-                        echo "Installing kubectl..."
-                        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-                        chmod +x kubectl
-                        mv kubectl /usr/local/bin/
-                        echo "kubectl installed successfully"
-                    fi
-                    '''
+                withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
+                    script {
+                        // Installer kubectl si absent
+                        sh '''
+                        if ! command -v kubectl &> /dev/null; then
+                            echo "Installing kubectl..."
+                            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                            chmod +x kubectl
+                            mv kubectl /usr/local/bin/
+                            echo "kubectl installed successfully"
+                        fi
+                        '''
 
-                    // Déployer le namespace et le secret
-                    sh '''
-                    kubectl apply -f k8s/namespace.yaml
-                    kubectl apply -f k8s/secrets.yaml --validate=false
-                    '''
+                        // Déployer namespace et secrets
+                        sh '''
+                        kubectl apply -f k8s/namespace.yaml
+                        kubectl apply -f k8s/secrets.yaml --validate=false
+                        '''
 
-                    // Déployer le service et le déploiement
-                    sh '''
-                    kubectl apply -f k8s/service.yaml
-                    kubectl apply -f k8s/deployment.yaml
-                    kubectl set image deployment/library-api-deployment \
-                        library-api=docker.io/papesembene/library-api:${GIT_COMMIT} \
-                        -n library --record
-                    kubectl rollout status deployment/library-api-deployment \
-                        -n library --timeout=600s
-                    '''
+                        // Déployer service et déploiement
+                        sh '''
+                        kubectl apply -f k8s/service.yaml
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl set image deployment/library-api-deployment \
+                            library-api=docker.io/papesembene/library-api:${IMAGE_TAG} \
+                            -n library
+                        kubectl rollout status deployment/library-api-deployment \
+                            -n library --timeout=600s
+                        '''
+                    }
                 }
             }
         }
-
 
     }
 
