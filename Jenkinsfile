@@ -1,8 +1,8 @@
 pipeline {
   agent {
     docker {
-      image 'dtzar/helm-kubectl:3.12.0'
-      args '-u root'
+      image 'openjdk:17-jdk-slim'
+      args '-u root -v /var/run/docker.sock:/var/run/docker.sock'
     }
   }
 
@@ -19,6 +19,19 @@ pipeline {
   }
 
   stages {
+    stage('Setup Tools') {
+      steps {
+        sh '''
+          apt-get update && apt-get install -y curl docker.io
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          mv kubectl /usr/local/bin/
+          kubectl version --client
+          docker --version
+        '''
+      }
+    }
+
     stage('Checkout') {
       steps { git branch: 'main', url: 'https://github.com/papesembene/Gestion_Library.git' }
     }
