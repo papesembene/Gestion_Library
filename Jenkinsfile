@@ -1,5 +1,10 @@
 pipeline {
-  agent any
+  agent {
+    docker {
+      image 'dtzar/helm-kubectl:3.12.0'
+      args '-u root'
+    }
+  }
 
   environment {
     DOCKER_IMAGE = "papesembene/library-api:${env.GIT_COMMIT}"
