@@ -8,10 +8,10 @@ pipeline {
     }
 
     environment {
-        DOCKER_REGISTRY = 'index.docker.io'
-        DOCKER_REPO = 'papesembene/library-api'
+        DOCKER_USER = "papesembene"
+        DOCKER_IMAGE_NAME = "library-api"
         IMAGE_TAG = "${env.GIT_COMMIT.take(8)}"
-        DOCKER_IMAGE = "${DOCKER_REPO}:${IMAGE_TAG}"
+        FULL_IMAGE_TAG = "${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
         KUBE_NAMESPACE = 'library'
         APP_NAME = 'library-api'
     }
@@ -23,7 +23,8 @@ pipeline {
     }
 
     stages {
-        stage('📦 Build & Package') {
+
+        stage('📦 Build JAR') {
             steps {
                 sh 'mvn clean package -DskipTests'
                 archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
@@ -33,21 +34,23 @@ pipeline {
         stage('🐳 Build Docker Image') {
             steps {
                 script {
-                    def dockerImage = docker.build("${DOCKER_IMAGE}", "--build-arg JAR_FILE=target/*.jar .")
-                    echo "✅ Docker image built: ${DOCKER_IMAGE}"
+                    echo "Building Docker image: ${FULL_IMAGE_TAG}"
+                    sh "docker build -t ${FULL_IMAGE_TAG} --build-arg JAR_FILE=target/*.jar ."
                 }
             }
         }
 
-        stage('📤 Push to Registry') {
+        stage('📤 Push to DockerHub') {
             steps {
                 script {
                     docker.withRegistry("https://index.docker.io", 'dockerhub') {
-                        def image = docker.image("${DOCKER_IMAGE}")
-                        image.push()
-                        image.push('latest')
+                        sh """
+                            docker push ${FULL_IMAGE_TAG}
+                            docker tag ${FULL_IMAGE_TAG} ${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest
+                            docker push ${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest
+                        """
+                        echo "🚀 Pushed successfully: ${FULL_IMAGE_TAG}"
                     }
-                    echo "✅ Image pushed: ${DOCKER_IMAGE}"
                 }
             }
         }
@@ -62,7 +65,7 @@ pipeline {
             steps {
                 script {
                     withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                        // Apply Kubernetes manifests
+
                         sh """
                             kubectl apply -f k8s/namespace.yaml
                             kubectl apply -f k8s/secrets.yaml
@@ -70,82 +73,54 @@ pipeline {
                             kubectl apply -f k8s/deployment.yaml
                         """
 
-                        // Update deployment with new image
+                        // Deployment update
                         sh """
                             kubectl set image deployment/${APP_NAME}-deployment \\
-                            ${APP_NAME}=${DOCKER_REGISTRY}/${DOCKER_IMAGE} \\
+                            ${APP_NAME}=docker.io/${FULL_IMAGE_TAG} \\
                             -n ${KUBE_NAMESPACE} --record
                         """
 
-                        // Wait for rollout to complete
                         sh """
-                            kubectl rollout status deployment/${APP_NAME}-deployment \\
-                            -n ${KUBE_NAMESPACE} --timeout=600s
+                            kubectl rollout status deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} --timeout=600s
                         """
 
-                        // Verify deployment
                         sh """
-                            kubectl get pods -n ${KUBE_NAMESPACE} -l app=${APP_NAME}
-                            kubectl get svc -n ${KUBE_NAMESPACE} -l app=${APP_NAME}
+                            kubectl get pods -n ${KUBE_NAMESPACE}
+                            kubectl get svc -n ${KUBE_NAMESPACE}
                         """
                     }
                 }
             }
         }
-
     }
 
     post {
         success {
             script {
-                def duration = currentBuild.durationString.replace(' and counting', '')
-                def message = """
-🎉 **DÉPLOIEMENT RÉUSSI**
-
-✅ Pipeline exécuté avec succès
-⏱️ Durée: ${duration}
-🏷️ Image: ${DOCKER_IMAGE}
-🌐 Namespace: ${KUBE_NAMESPACE}
-📊 Build: #${currentBuild.number}
-
-🔗 Application accessible sur le cluster Kubernetes
-                """.stripIndent()
-
-                echo message
+                echo """
+            🎉 DEPLOYMENT SUCCESSFUL
+            -----------------------------------
+            Image: ${FULL_IMAGE_TAG}
+            Namespace: ${KUBE_NAMESPACE}
+            Build #: ${currentBuild.number}
+            -----------------------------------
+                            """
             }
         }
 
         failure {
             script {
-                def message = """
-❌ **ÉCHEC DU DÉPLOIEMENT**
-
-🔴 Pipeline échoué
-🏷️ Build: #${currentBuild.number}
-📋 Logs: ${currentBuild.absoluteUrl}
-
-🔍 Vérifiez les logs pour diagnostiquer le problème
-                """.stripIndent()
-
-                echo message
-
-                // Rollback automatique en cas d'échec
+                echo "❌ Deployment failed, rolling back..."
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                    sh """
-                        kubectl rollout undo deployment/${APP_NAME}-deployment \\
-                        -n ${KUBE_NAMESPACE} || true
-                    """
+                    sh "kubectl rollout undo deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} || true"
                 }
             }
         }
 
         always {
             script {
-                // Cleanup Docker images
-                sh "docker rmi ${DOCKER_IMAGE} || true"
+                sh "docker rmi ${FULL_IMAGE_TAG} || true"
                 sh "docker system prune -f || true"
-
-                // Archive logs
                 archiveArtifacts artifacts: 'target/surefire-reports/*.xml', allowEmptyArchive: true
             }
         }
