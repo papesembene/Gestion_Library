@@ -68,9 +68,21 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                     sh """
+                        # Install kubectl if not present
+                        if ! command -v kubectl &> /dev/null; then
+                            echo "Installing kubectl..."
+                            curl -LO "https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                            chmod +x kubectl
+                            mv kubectl /usr/local/bin/
+                            echo "kubectl installed successfully"
+                        else
+                            echo "kubectl already installed"
+                        fi
+
+                        # Deploy to Kubernetes
                         kubectl apply -f k8s/
                         kubectl set image deployment/${APP_NAME}-deployment ${APP_NAME}=docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} -n ${KUBE_NAMESPACE} --record
-                        kubectl rollout status deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} --timeout=300s
+                        kubectl rollout status deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} --timeout=600s
                     """
                 }
             }
