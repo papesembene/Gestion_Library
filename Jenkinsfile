@@ -17,8 +17,14 @@ pipeline {
     stage('Setup Environment') {
       steps {
         sh '''
-          apt-get update && apt-get upgrade -y
-          apt-get install -y openjdk-17-jdk maven curl docker.io
+          apt-get update
+          apt-get install -y default-jdk maven curl wget gnupg lsb-release
+          # Install Docker
+          curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io
+          # Install kubectl
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
           mv kubectl /usr/local/bin/
