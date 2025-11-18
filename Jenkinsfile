@@ -3,7 +3,6 @@ pipeline {
         docker {
             image 'maven:3.9.6-eclipse-temurin-17'
             args '-v /var/run/docker.sock:/var/run/docker.sock -v maven-cache:/root/.m2 -u root'
-            reuseNode true
         }
     }
 
@@ -15,52 +14,51 @@ pipeline {
         APP_NAME = 'library-api'
     }
 
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
-        disableConcurrentBuilds()
-    }
-
     stages {
 
-        stage('📦 Build JAR') {
+        stage('Build & Package') {
             steps {
                 sh 'mvn clean package -DskipTests'
-                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                stash includes: 'target/*.jar', name: 'jar-built'
             }
         }
 
-        stage('🐳 Build Docker Image') {
+        stage('Check & Build Docker Image') {
             steps {
+                unstash 'jar-built'
                 script {
-                    sh """
-                        docker build -t ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} --build-arg JAR_FILE=target/*.jar .
-                        echo "✅ Docker image built: ${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
-                    """
+                    def imageExists = sh(script: "docker manifest inspect docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} >/dev/null 2>&1 && echo yes || echo no", returnStdout: true).trim()
+                    if (imageExists == "yes") {
+                        echo "✅ Docker image already exists for this commit. Skipping build."
+                    } else {
+                        sh """
+                            docker build -t ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} --build-arg JAR_FILE=target/*.jar .
+                        """
+                    }
                 }
             }
         }
 
-        stage('📤 Push Docker Image') {
+        stage('Push Docker Image') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh """
-                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                        docker tag ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}
-                        docker push docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}
-                        docker tag docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest
-                        docker push docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest
-                        docker logout
-                    """
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    script {
+                        retry(3) {
+                            sh """
+                                echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                                docker tag ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}
+                                docker push docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}
+                                docker tag docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest
+                                docker push docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest
+                                docker logout
+                            """
+                        }
+                    }
                 }
             }
         }
 
-        stage('🚀 Deploy to Kubernetes') {
+        stage('Deploy to Kubernetes') {
             environment {
                 SPRING_DATASOURCE_URL = credentials('db-url')
                 SPRING_DATASOURCE_USERNAME = credentials('db-username')
@@ -70,54 +68,25 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                     sh """
-                        kubectl apply -f k8s/namespace.yaml
-                        kubectl apply -f k8s/secrets.yaml
-                        kubectl apply -f k8s/service.yaml
-                        kubectl apply -f k8s/deployment.yaml
-
-                        kubectl set image deployment/${APP_NAME}-deployment \\
-                        ${APP_NAME}=docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} \\
-                        -n ${KUBE_NAMESPACE} --record
-
-                        kubectl rollout status deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} --timeout=600s
-
-                        kubectl get pods -n ${KUBE_NAMESPACE} -l app=${APP_NAME}
-                        kubectl get svc -n ${KUBE_NAMESPACE} -l app=${APP_NAME}
+                        kubectl apply -f k8s/
+                        kubectl set image deployment/${APP_NAME}-deployment ${APP_NAME}=docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} -n ${KUBE_NAMESPACE} --record
+                        kubectl rollout status deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} --timeout=300s
                     """
                 }
             }
         }
+
     }
 
     post {
-        success {
-            script {
-                echo """
-🎉 DEPLOYMENT SUCCESSFUL
------------------------------------
-Image: docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}
-Namespace: ${KUBE_NAMESPACE}
-Build #: ${currentBuild.number}
------------------------------------
-                """
-            }
-        }
-
         failure {
-            script {
-                echo "❌ Deployment failed, rolling back..."
-                withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                    sh "kubectl rollout undo deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} || true"
-                }
+            withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
+                sh "kubectl rollout undo deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} || true"
             }
         }
-
         always {
-            script {
-                sh "docker rmi ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} || true"
-                sh "docker system prune -f || true"
-                archiveArtifacts artifacts: 'target/surefire-reports/*.xml', allowEmptyArchive: true
-            }
+            sh "docker rmi ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} || true"
+            archiveArtifacts artifacts: 'target/surefire-reports/*.xml', allowEmptyArchive: true
         }
     }
 }
