@@ -8,7 +8,7 @@ pipeline {
     }
 
     environment {
-        DOCKER_REGISTRY = 'docker.io'
+        DOCKER_REGISTRY = 'index.docker.io'
         DOCKER_REPO = 'papesembene/library-api'
         IMAGE_TAG = "${env.GIT_COMMIT.take(8)}"
         DOCKER_IMAGE = "${DOCKER_REPO}:${IMAGE_TAG}"
@@ -42,7 +42,7 @@ pipeline {
         stage('📤 Push to Registry') {
             steps {
                 script {
-                    docker.withRegistry("https://${DOCKER_REGISTRY}", 'dockerhub') {
+                    docker.withRegistry("https://index.docker.io", 'dockerhub') {
                         def image = docker.image("${DOCKER_IMAGE}")
                         image.push()
                         image.push('latest')
