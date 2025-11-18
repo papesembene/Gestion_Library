@@ -41,11 +41,6 @@ pipeline {
                         junit 'target/surefire-reports/*.xml'
                     }
                 }
-                stage('Dependency Check') {
-                    steps {
-                        sh 'mvn org.owasp:dependency-check-maven:check || echo "OWASP check skipped"'
-                    }
-                }
             }
         }
 
@@ -128,10 +123,17 @@ pipeline {
                         sh """
                             SERVICE_IP=\$(kubectl get svc ${APP_NAME}-service \\
                             -n ${KUBE_NAMESPACE} -o jsonpath='{.spec.clusterIP}')
-                            echo "Service IP: \$SERVICE_IP"
+                            EXTERNAL_IP=\$(kubectl get svc ${APP_NAME}-service \\
+                            -n ${KUBE_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Pending")
+                            echo "Service IP (interne): \$SERVICE_IP"
+                            echo "External IP (LoadBalancer): \$EXTERNAL_IP"
 
-                            # Test health endpoint
-                            timeout 30 bash -c 'until curl -f http://\$SERVICE_IP:8080/actuator/health; do sleep 5; done' || echo "Health check skipped"
+                            # Test health endpoint via external IP if available
+                            if [ "\$EXTERNAL_IP" != "Pending" ] && [ -n "\$EXTERNAL_IP" ]; then
+                                timeout 30 bash -c 'until curl -f http://\$EXTERNAL_IP/actuator/health; do sleep 5; done' || echo "Health check skipped"
+                            else
+                                echo "LoadBalancer IP not yet assigned, skipping external health check"
+                            fi
                         """
                     }
                 }

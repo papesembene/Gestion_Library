@@ -4,6 +4,6 @@ metadata:
   name: library-api-service
   namespace: library
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector: { app: library-api }
   ports: [{ port: 80, targetPort: 8080 }]
