@@ -20,7 +20,8 @@ spec:
     spec:
       containers:
       - name: library-api
-        image: papesembene/library-api:v1.1
+        image: papesembene/library-api:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 8080
         resources:
