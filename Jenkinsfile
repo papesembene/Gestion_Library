@@ -16,7 +16,6 @@ pipeline {
     }
 
     stages {
-        // === NOUVELLE VERSION QUI MARCHE À TOUS LES COUPS ===
         stage('Prepare') {
             agent any
             steps {
