@@ -47,8 +47,12 @@ pipeline {
 
                         if (exists == 'yes') {
                             echo "✅ Image ${image} déjà sur Docker Hub → Skip build & push"
+                            env.SKIP_DEPLOY = 'true'
                         } else {
                             echo "🔨 Construction de l'image ${image}..."
+
+                            // Copier le JAR pour le build
+                            sh "cp target/*.jar app.jar"
 
                             // Login d'abord (sécurisé)
                             sh """
@@ -57,7 +61,7 @@ pipeline {
 
                             // Build simple (sans buildx, sans platform – ça marche natif amd64)
                             sh """
-                                docker build -t ${image} .
+                                docker build --build-arg JAR_FILE=app.jar -t ${image} .
                             """
 
                             // Tag latest
@@ -124,12 +128,16 @@ pipeline {
     post {
         failure {
             withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                sh "kubectl rollout undo deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} || true"
+                node {
+                    sh "kubectl rollout undo deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} || true"
+                }
             }
         }
         always {
             // Nettoyage léger
-            sh "docker image prune -f || true"
+            node {
+                sh "docker image prune -f || true"
+            }
             archiveArtifacts artifacts: 'target/surefire-reports/*.xml', allowEmptyArchive: true
         }
     }
