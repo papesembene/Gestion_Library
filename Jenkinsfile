@@ -128,16 +128,12 @@ pipeline {
     post {
         failure {
             withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                node {
-                    sh "kubectl rollout undo deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} || true"
-                }
+                sh "kubectl rollout undo deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} || true"
             }
         }
         always {
             // Nettoyage léger
-            node {
-                sh "docker image prune -f || true"
-            }
+            sh "docker image prune -f || true"
             archiveArtifacts artifacts: 'target/surefire-reports/*.xml', allowEmptyArchive: true
         }
     }
