@@ -1,10 +1,10 @@
 pipeline {
     agent {
-        docker {
-            image 'maven:3.9.6-eclipse-temurin-17'
-            args '-v /var/run/docker.sock:/var/run/docker.sock -v maven-cache:/root/.m2 -v /home/mr-sem-s/.minikube:/home/mr-sem-s/.minikube -u root'
-            reuseNode true
-        }
+       docker {
+        image 'maven:3.9.6-eclipse-temurin-17-alpine'
+        args '-v /var/run/docker.sock:/var/run/docker.sock -v maven-repo:/root/.m2 -u root'
+        reuseNode true
+    }
     }
 
     environment {
@@ -83,37 +83,39 @@ pipeline {
         // =========================================================
         stage('Deploy to Kubernetes') {
             when {
-                expression { env.SKIP_DEPLOY != 'true' }
+                expression { env.SKIP_DEPLOY != 'true' }   // ne se lance que si on a poussé une nouvelle image
             }
             steps {
+                // Le kubeconfig est stocké en sécurité dans Jenkins Credentials (fichier)
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                    script {
-                        sh '''
-                            if ! command -v kubectl >/dev/null 2>&1; then
-                                echo "Installation de kubectl..."
-                                curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-                                chmod +x kubectl
-                                mv kubectl /usr/local/bin/
-                            fi
+                    sh '''
+                        set -e  # arrêt immédiat si une commande échoue
 
-                            # Wait pour API ready (fix timeout)
-                            echo "⏳ Attente API Kubernetes..."
-                            kubectl wait --for=condition=Ready pod -n kube-system -l component=kube-apiserver --timeout=120s || echo "API lag, on continue..."
+                        echo "Connexion au cluster Kubernetes..."
+                        kubectl version --client && kubectl cluster-info
 
-                            # Apply avec --validate=false
-                            kubectl apply -f k8s/namespace.yaml --validate=false
-                            kubectl apply -f k8s/secrets.yaml --validate=false
-                            kubectl apply -f k8s/service.yaml --validate=false
-                            kubectl apply -f k8s/deployment.yaml --validate=false
+                        echo "Application des manifests (namespace, secrets, service, deployment)..."
+                        kubectl apply -f k8s/ --recursive --prune -l app=library-api
 
-                            kubectl set image deployment/library-api-deployment \
-                                library-api=${FULL_IMAGE} \
-                                -n ${KUBE_NAMESPACE}
+                        echo "Mise à jour de l'image dans le Deployment..."
+                        kubectl set image deployment/library-api-deployment \
+                            library-api=${FULL_IMAGE} \
+                            -n ${KUBE_NAMESPACE} \
+                            --record
 
-                            kubectl rollout status deployment/library-api-deployment \
-                                -n ${KUBE_NAMESPACE} --timeout=600s
-                        '''
-                    }
+                        echo "Attente du rollout (max 5 minutes)..."
+                        kubectl rollout status deployment/library-api-deployment \
+                            -n ${KUBE_NAMESPACE} \
+                            --timeout=5m
+
+                        echo ""
+                        echo "DÉPLOIEMENT RÉUSSI !"
+                        echo "Ton API est accessible ici :"
+                        kubectl get svc -n ${KUBE_NAMESPACE} library-api-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+                        echo ""
+                        echo "ou via le port-forward temporaire :"
+                        echo "kubectl port-forward svc/library-api-service 8080:80 -n ${KUBE_NAMESPACE}"
+                    '''
                 }
             }
         }
