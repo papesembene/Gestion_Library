@@ -59,7 +59,7 @@ pipeline {
         // 2. Vérifier si l'image existe déjà sur Docker Hub
         // =========================================================
         stage('Check Docker Image Exists') {
-            agent { docker { image: 'docker:27.3.1-dind-alpine3.20', args: '--privileged' } }
+            agent { docker { image 'docker:27.3.1-dind-alpine3.20' args '--privileged' } }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     script {
@@ -88,7 +88,7 @@ pipeline {
         // =========================================================
         stage('Build & Push Docker') {
             when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
-            agent { docker { image: 'docker:27.3.1-dind-alpine3.20', args: '--privileged' } }
+            agent { docker { image 'docker:27.3.1-dind-alpine3.20' args '--privileged' } }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     sh '''
