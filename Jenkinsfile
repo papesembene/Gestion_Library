@@ -31,35 +31,53 @@ pipeline {
         // 2. Build Docker Image (avec cache intelligent + skip si déjà existante)
         // =========================================================
         stage('Build & Push Docker Image') {
+            when {
+                expression { env.SKIP_DEPLOY != 'true' }  // On skip si déjà fait
+            }
             steps {
-                script {
-                    // Vérifie si l'image existe déjà sur Docker Hub
-                    def imageExists = sh(
-                        script: "docker manifest inspect ${FULL_IMAGE} > /dev/null 2>&1 && echo 'yes' || echo 'no'",
-                        returnStdout: true
-                    ).trim()
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    script {
+                        def image = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
+                        def latest = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest"
 
-                    if (imageExists == 'yes') {
-                        echo "Docker image ${FULL_IMAGE} déjà présente sur Docker Hub → on skip le build & push"
-                        env.SKIP_DEPLOY = 'true'
-                    } else {
-                        echo "Construction de l'image Docker ${FULL_IMAGE}"
+                        // Vérif si l'image existe déjà (pour éviter les rebuilds inutiles)
+                        def exists = sh(script: """
+                            docker manifest inspect ${image} >/dev/null 2>&1 && echo 'yes' || echo 'no'
+                        """, returnStdout: true).trim()
 
-                        // Build avec BuildKit (plus rapide + cache)
-                        sh """
-                            docker buildx create --use --name mybuilder || true
-                            docker buildx build --push \
-                                --tag ${FULL_IMAGE} \
-                                --tag docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest \
-                                --platform linux/amd64 \
-                                .
-                        """
-                        echo "Image construite et poussée avec succès"
+                        if (exists == 'yes') {
+                            echo "✅ Image ${image} déjà sur Docker Hub → Skip build & push"
+                        } else {
+                            echo "🔨 Construction de l'image ${image}..."
+
+                            // Login d'abord (sécurisé)
+                            sh """
+                                echo "\$DOCKER_PASS" | docker login -u "\$DOCKER_USER" --password-stdin
+                            """
+
+                            // Build simple (sans buildx, sans platform – ça marche natif amd64)
+                            sh """
+                                docker build -t ${image} .
+                            """
+
+                            // Tag latest
+                            sh """
+                                docker tag ${image} ${latest}
+                            """
+
+                            // Push les deux
+                            sh """
+                                docker push ${image}
+                                docker push ${latest}
+                                docker logout
+                            """
+
+                            echo "🚀 Image construite et poussée avec succès !"
+                        }
                     }
                 }
             }
         }
-
         // =========================================================
         // 3. Déploiement Kubernetes (seulement si on a poussé une nouvelle image)
         // =========================================================
