@@ -32,6 +32,25 @@ pipeline {
             }
         }
 
+        stage('Build Maven') {
+            agent {
+                docker {
+                    image 'maven:3.9.9-eclipse-temurin-17-alpine'
+                    args '-v maven-repo:/root/.m2 --user root'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh 'mvn -B clean package -DskipTests'
+            }
+            post {
+                always {
+                    junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                }
+            }
+        }
+
         stage('Build & Push Docker (Multi-stage)') {
             agent any
             steps {
