@@ -25,9 +25,9 @@ pipeline {
                 checkout scm
                 script {
                     env.IMAGE_TAG    = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    env.FULL_IMAGE   = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
+                    env.FULL_IMAGE   = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${env.IMAGE_TAG}"
                     env.LATEST_IMAGE = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest"
-                    echo "Tag de build : ${IMAGE_TAG}"
+                    echo "Tag de build : ${env.IMAGE_TAG}"
                 }
             }
         }
