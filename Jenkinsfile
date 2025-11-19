@@ -12,7 +12,9 @@ pipeline {
         DOCKER_IMAGE_NAME = "library-api"
         KUBE_NAMESPACE    = "library"
         DEPLOYMENT_NAME   = "library-api-deployment"
-        SKIP_BUILD_PUSH   = "false"
+        IMAGE_TAG         = ""
+        FULL_IMAGE        = ""
+        LATEST_IMAGE      = ""
     }
 
     stages {
@@ -30,59 +32,35 @@ pipeline {
             }
         }
 
-        stage('Check Docker Image Exists') {
-            agent {
-                docker {
-                    image 'docker:27.3.1-dind-alpine3.20'
-                    args '--privileged'
-                    reuseNode true
-                }
-            }
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                    script {
-                        def exists = sh(
-                            script: '''
-                                set +e
-                                echo "$PASS" | docker login -u "$USER" --password-stdin >/dev/null
-                                docker manifest inspect ${FULL_IMAGE} >/dev/null 2>&1
-                                echo $?
-                            ''',
-                            returnStdout: true
-                        ).trim()
-
-                        env.SKIP_BUILD_PUSH = (exists == "0") ? "true" : "false"
-
-                        echo (env.SKIP_BUILD_PUSH == "true" 
-                            ? "Image déjà publiée → skip build & deploy" 
-                            : "Nouvelle image → build & deploy")
-                    }
-                }
-            }
-        }
-
         stage('Build & Push Docker (Multi-stage)') {
-            when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
             agent {
                 docker {
                     image 'docker:27.3.1-dind-alpine3.20'
-                    args '--privileged'
+                    // --pull=false évite que Jenkins tente de pull l'image Dind
+                    args '--privileged --pull=false'
                     reuseNode true
                 }
             }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub', 
+                    usernameVariable: 'USER', 
+                    passwordVariable: 'PASS'
+                )]) {
                     sh '''
                         set -euo pipefail
 
+                        # Login Docker Hub (token permanent)
                         echo "$PASS" | docker login -u "$USER" --password-stdin
 
+                        # Build multi-stage Dockerfile (production-grade)
                         DOCKER_BUILDKIT=1 docker build \
                             -t ${FULL_IMAGE} \
                             -t ${LATEST_IMAGE} \
-                            --pull \
+                            --progress=plain \
                             .
 
+                        # Push images
                         docker push ${FULL_IMAGE}
                         docker push ${LATEST_IMAGE}
                     '''
@@ -91,7 +69,6 @@ pipeline {
         }
 
         stage('Deploy to Kubernetes') {
-            when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
             agent {
                 docker {
                     image 'bitnami/kubectl:1.31'
@@ -103,18 +80,16 @@ pipeline {
                     sh '''
                         set -euo pipefail
 
-                        kubectl apply -f k8s/ --recursive --prune -l app=library-api
-
+                        kubectl apply -f k8s/ --recursive
                         kubectl set image deployment/${DEPLOYMENT_NAME} \
-                            library-api=${FULL_IMAGE} \
+                            ${DOCKER_IMAGE_NAME}=${FULL_IMAGE} \
                             -n ${KUBE_NAMESPACE} \
                             --record
-
                         kubectl rollout status deployment/${DEPLOYMENT_NAME} \
                             -n ${KUBE_NAMESPACE} \
                             --timeout=300s
 
-                        echo "🚀 Déploiement terminé avec succès !"
+                        echo "✅ Déploiement terminé"
                     '''
                 }
             }
@@ -122,26 +97,9 @@ pipeline {
     }
 
     post {
-        success { echo '🔥 Pipeline terminé avec succès !' }
-
-        failure {
-            script {
-                if (env.SKIP_BUILD_PUSH == 'false') {
-                    withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                        sh '''
-                            kubectl rollout undo deployment/${DEPLOYMENT_NAME} \
-                                -n ${KUBE_NAMESPACE} || true
-                        '''
-                    }
-                }
-            }
-        }
-
         always {
-            node('built-in') {
-                sh 'docker image prune -f || true'
-                cleanWs()
-            }
+            sh 'docker image prune -f || true'
+            cleanWs()
         }
     }
 }
