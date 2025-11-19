@@ -35,7 +35,7 @@ pipeline {
         stage('Build & Push Docker (Multi-stage)') {
             agent {
                 docker {
-                    image 'docker:27.3.1-dind-alpine3.20'
+                    image 'docker:dind'
                     args '--privileged -u root'
                     reuseNode true
                 }
