@@ -36,8 +36,8 @@ pipeline {
             agent {
                 docker {
                     image 'docker:27.3.1-dind-alpine3.20'
-                    // --pull=false évite que Jenkins tente de pull l'image Dind
-                    args '--privileged --pull=false'
+                    pull false
+                    args '--privileged'
                     reuseNode true
                 }
             }
