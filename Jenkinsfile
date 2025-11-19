@@ -33,48 +33,68 @@ pipeline {
         }
 
         stage('Build & Push Docker (Multi-stage)') {
-            agent {
-                docker {
-                    image 'docker:dind'
-                    alwaysPull false
-                    args '--privileged -u root'
-                    reuseNode true
-                }
-            }
+            agent any
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub', 
-                    usernameVariable: 'USER', 
+                    credentialsId: 'dockerhub',
+                    usernameVariable: 'USER',
                     passwordVariable: 'PASS'
                 )]) {
-                    sh '''
-                        set -euo pipefail
+                    script {
+                        def exists = sh(
+                            script: """
+                                echo "$PASS" | docker login -u "$USER" --password-stdin > /dev/null
+                                docker manifest inspect ${env.FULL_IMAGE} > /dev/null 2>&1 && echo true || echo false
+                            """,
+                            returnStdout: true
+                        ).trim()
 
-                        # Login Docker Hub (token permanent)
-                        echo "$PASS" | docker login -u "$USER" --password-stdin
+                        env.SKIP_BUILD_PUSH = exists == 'true' ? 'true' : 'false'
 
-                        # Build multi-stage Dockerfile (production-grade)
-                        DOCKER_BUILDKIT=1 docker build \
-                            -t ${FULL_IMAGE} \
-                            -t ${LATEST_IMAGE} \
-                            --progress=plain \
-                            .
+                        if (env.SKIP_BUILD_PUSH == 'true') {
+                            echo "Image ${env.FULL_IMAGE} déjà sur Docker Hub → skip build & déploiement"
+                        } else {
+                            echo "Nouvelle image à construire : ${env.FULL_IMAGE}"
+                        }
+                    }
+                }
+                script {
+                    if (env.SKIP_BUILD_PUSH == 'false') {
+                        withCredentials([usernamePassword(
+                            credentialsId: 'dockerhub',
+                            usernameVariable: 'USER',
+                            passwordVariable: 'PASS'
+                        )]) {
+                            sh '''
+                                set -euo pipefail
 
-                        # Push images
-                        docker push ${FULL_IMAGE}
-                        docker push ${LATEST_IMAGE}
-                    '''
+                                # Copier le JAR pour éviter .dockerignore
+                                cp target/*.jar app.jar
+
+                                # Login Docker Hub (token permanent)
+                                echo "$PASS" | docker login -u "$USER" --password-stdin
+
+                                # Build multi-stage Dockerfile (production-grade)
+                                DOCKER_BUILDKIT=1 docker build \
+                                    --build-arg JAR_FILE=app.jar \
+                                    -t ${FULL_IMAGE} \
+                                    -t ${LATEST_IMAGE} \
+                                    --progress=plain \
+                                    .
+
+                                # Push images
+                                docker push ${FULL_IMAGE}
+                                docker push ${LATEST_IMAGE}
+                            '''
+                        }
+                    }
                 }
             }
         }
 
         stage('Deploy to Kubernetes') {
-            agent {
-                docker {
-                    image 'bitnami/kubectl:1.31'
-                    reuseNode true
-                }
-            }
+            when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
+            agent any
             steps {
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                     sh '''
