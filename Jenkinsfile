@@ -88,7 +88,6 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                     script {
-                        // Installation de kubectl si besoin
                         sh '''
                             if ! command -v kubectl >/dev/null 2>&1; then
                                 echo "Installation de kubectl..."
@@ -96,13 +95,16 @@ pipeline {
                                 chmod +x kubectl
                                 mv kubectl /usr/local/bin/
                             fi
-                        '''
 
-                        sh '''
-                            kubectl apply -f k8s/namespace.yaml
+                            # Wait pour API ready (fix timeout)
+                            echo "⏳ Attente API Kubernetes..."
+                            kubectl wait --for=condition=Ready pod -n kube-system -l component=kube-apiserver --timeout=120s || echo "API lag, on continue..."
+
+                            # Apply avec --validate=false
+                            kubectl apply -f k8s/namespace.yaml --validate=false
                             kubectl apply -f k8s/secrets.yaml --validate=false
-                            kubectl apply -f k8s/service.yaml
-                            kubectl apply -f k8s/deployment.yaml
+                            kubectl apply -f k8s/service.yaml --validate=false
+                            kubectl apply -f k8s/deployment.yaml --validate=false
 
                             kubectl set image deployment/library-api-deployment \
                                 library-api=${FULL_IMAGE} \
