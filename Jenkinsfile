@@ -36,7 +36,6 @@ pipeline {
             agent {
                 docker {
                     image 'docker:27.3.1-dind-alpine3.20'
-                    pull false
                     args '--privileged'
                     reuseNode true
                 }
