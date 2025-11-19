@@ -1,140 +1,181 @@
 pipeline {
-    agent {
-       docker {
-        image 'maven:3.9.6-eclipse-temurin-17-alpine'
-        args '-v /var/run/docker.sock:/var/run/docker.sock -v maven-repo:/root/.m2 -u root'
-        reuseNode true
-    }
+    agent none
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timeout(time: 40, unit: 'MINUTES')
+        timestamps()
     }
 
     environment {
-        DOCKER_USER         = "papesembene"
-        DOCKER_IMAGE_NAME   = "library-api"
-        IMAGE_TAG           = "${env.GIT_COMMIT.take(8)}"
-        FULL_IMAGE          = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
-        KUBE_NAMESPACE      = 'library'
-        APP_NAME            = 'library-api'
+        DOCKER_USER       = "papesembene"
+        DOCKER_IMAGE_NAME = "library-api"
+        KUBE_NAMESPACE    = "library"
+        DEPLOYMENT_NAME   = "library-api-deployment"
+        SKIP_BUILD_PUSH   = "false"
+        // On calcule le tag plus tard, dans un stage avec agent → plus jamais d'erreur "sh without node"
     }
 
     stages {
-
         // =========================================================
-        // 1. Build & Package Maven
+        // 0. Checkout + Calcul du tag (obligatoire avec agent none)
         // =========================================================
-        stage('Build Maven') {
+        stage('Prepare') {
+            agent { docker { image 'alpine/git:latest' } }
             steps {
-                sh 'mvn clean package -DskipTests'
+                checkout scm
+                script {
+                    env.IMAGE_TAG   = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.FULL_IMAGE  = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${env.IMAGE_TAG}"
+                    env.LATEST_IMAGE = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest"
+                    echo "Tag de cette build : ${env.IMAGE_TAG}"
+                }
             }
         }
 
         // =========================================================
-        // 2. Build Docker Image (avec cache intelligent + skip si déjà existante)
+        // 1. Build & Tests Maven
         // =========================================================
-        stage('Build & Push Docker Image') {
-            when {
-                expression { env.SKIP_DEPLOY != 'true' }  // On skip si déjà fait
+        stage('Build Maven') {
+            agent {
+                docker {
+                    image 'maven:3.9.9-eclipse-temurin-17-alpine'
+                    args '-v maven-repo:/root/.m2 --user root'
+                    reuseNode true
+                }
             }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                sh 'mvn -B clean verify'
+            }
+            post {
+                always {
+                    junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                }
+            }
+        }
+
+        // =========================================================
+        // 2. Vérifier si l'image existe déjà sur Docker Hub
+        // =========================================================
+        stage('Check Docker Image Exists') {
+            agent { docker { image 'docker:27.3.1-dind-alpine3.20' args '--privileged' } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     script {
-                        def image = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
-                        def latest = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest"
+                        def exists = sh(
+                            script: """
+                                echo "$PASS" | docker login -u "$USER" --password-stdin > /dev/null
+                                docker manifest inspect ${env.FULL_IMAGE} > /dev/null 2>&1 && echo true || echo false
+                            """,
+                            returnStdout: true
+                        ).trim()
 
-                        // Vérif si l'image existe déjà (pour éviter les rebuilds inutiles)
-                        def exists = sh(script: """
-                            docker manifest inspect ${image} >/dev/null 2>&1 && echo 'yes' || echo 'no'
-                        """, returnStdout: true).trim()
+                        env.SKIP_BUILD_PUSH = exists == 'true' ? 'true' : 'false'
 
-                        if (exists == 'yes') {
-                            echo "✅ Image ${image} déjà sur Docker Hub → Skip build & push"
-                            env.SKIP_DEPLOY = 'true'
+                        if (env.SKIP_BUILD_PUSH == 'true') {
+                            echo "Image ${env.FULL_IMAGE} déjà sur Docker Hub → skip build & déploiement"
                         } else {
-                            echo "🔨 Construction de l'image ${image}..."
-
-                            // Copier le JAR pour le build
-                            sh "cp target/*.jar app.jar"
-
-                            // Login d'abord (sécurisé)
-                            sh """
-                                echo "\$DOCKER_PASS" | docker login -u "\$DOCKER_USER" --password-stdin
-                            """
-
-                            // Build simple (sans buildx, sans platform – ça marche natif amd64)
-                            sh """
-                                docker build --build-arg JAR_FILE=app.jar -t ${image} .
-                            """
-
-                            // Tag latest
-                            sh """
-                                docker tag ${image} ${latest}
-                            """
-
-                            // Push les deux
-                            sh """
-                                docker push ${image}
-                                docker push ${latest}
-                                docker logout
-                            """
-
-                            echo "🚀 Image construite et poussée avec succès !"
+                            echo "Nouvelle image à construire : ${env.FULL_IMAGE}"
                         }
                     }
                 }
             }
         }
+
         // =========================================================
-        // 3. Déploiement Kubernetes (seulement si on a poussé une nouvelle image)
+        // 3. Build & Push Docker (seulement si nécessaire)
+        // =========================================================
+        stage('Build & Push Docker') {
+            when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
+            agent { docker { image 'docker:27.3.1-dind-alpine3.20' args '--privileged' } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh '''
+                        set -euo pipefail
+
+                        # Résolution du problème .dockerignore + target/
+                        # On copie le JAR à la racine → garanti présent dans le contexte
+                        cp target/*.jar app.jar
+
+                        echo "$PASS" | docker login -u "$USER" --password-stdin
+
+                        DOCKER_BUILDKIT=1 docker build \
+                            --build-arg JAR_FILE=app.jar \
+                            -t ${FULL_IMAGE} \
+                            -t ${LATEST_IMAGE} \
+                            --pull --no-cache .
+
+                        docker push ${FULL_IMAGE}
+                        docker push ${LATEST_IMAGE}
+
+                        echo "Images poussées avec succès !"
+                    '''
+                }
+            }
+        }
+
+        // =========================================================
+        // 4. Déploiement Kubernetes
         // =========================================================
         stage('Deploy to Kubernetes') {
-            when {
-                expression { env.SKIP_DEPLOY != 'true' }   // ne se lance que si on a poussé une nouvelle image
+            when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
+            agent {
+                kubernetes {
+                    yaml '''
+                    apiVersion: v1
+                    kind: Pod
+                    spec:
+                      containers:
+                      - name: kubectl
+                        image: bitnami/kubectl:1.31
+                        command: ["sleep", "3600"]
+                    '''
+                }
             }
             steps {
-                // Le kubeconfig est stocké en sécurité dans Jenkins Credentials (fichier)
-                withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                    sh '''
-                        set -e  # arrêt immédiat si une commande échoue
+                container('kubectl') {
+                    withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
+                        sh '''
+                            set -euo pipefail
 
-                        echo "Connexion au cluster Kubernetes..."
-                        kubectl version --client && kubectl cluster-info
+                            kubectl apply -f k8s/ --recursive --prune -l app=library-api || true
 
-                        echo "Application des manifests (namespace, secrets, service, deployment)..."
-                        kubectl apply -f k8s/ --recursive --prune -l app=library-api
+                            kubectl set image deployment/${DEPLOYMENT_NAME} \
+                                library-api=${FULL_IMAGE} \
+                                -n ${KUBE_NAMESPACE} --record
 
-                        echo "Mise à jour de l'image dans le Deployment..."
-                        kubectl set image deployment/library-api-deployment \
-                            library-api=${FULL_IMAGE} \
-                            -n ${KUBE_NAMESPACE} \
-                            --record
+                            kubectl rollout status deployment/${DEPLOYMENT_NAME} \
+                                -n ${KUBE_NAMESPACE} --timeout=300s
 
-                        echo "Attente du rollout (max 5 minutes)..."
-                        kubectl rollout status deployment/library-api-deployment \
-                            -n ${KUBE_NAMESPACE} \
-                            --timeout=5m
-
-                        echo ""
-                        echo "DÉPLOIEMENT RÉUSSI !"
-                        echo "Ton API est accessible ici :"
-                        kubectl get svc -n ${KUBE_NAMESPACE} library-api-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-                        echo ""
-                        echo "ou via le port-forward temporaire :"
-                        echo "kubectl port-forward svc/library-api-service 8080:80 -n ${KUBE_NAMESPACE}"
-                    '''
+                            echo "DÉPLOIEMENT RÉUSSI !"
+                            echo "URL : http://$(kubectl get svc library-api-service -n ${KUBE_NAMESPACE} \
+                                -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo 'pas-d-ip-externe')"
+                        '''
+                    }
                 }
             }
         }
     }
 
     post {
+        success { echo 'Tout est OK !' }
         failure {
-            withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                sh "kubectl rollout undo deployment/${APP_NAME}-deployment -n ${KUBE_NAMESPACE} || true"
+            script {
+                if (env.SKIP_BUILD_PUSH == 'false') {
+                    echo 'Rollback du déploiement...'
+                    withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
+                        sh 'kubectl rollout undo deployment/${DEPLOYMENT_NAME} -n ${KUBE_NAMESPACE} || true'
+                    }
+                }
             }
         }
         always {
-            // Nettoyage léger
-            sh "docker image prune -f || true"
-            archiveArtifacts artifacts: 'target/surefire-reports/*.xml', allowEmptyArchive: true
+            // Nettoyage sûr et ciblé (plus de prune -af destructeur)
+            node('master || built-in') {
+                sh 'docker image prune -f || true'
+                cleanWs(cleanWhenAborted: true, cleanWhenFailure: true, cleanWhenSuccess: true)
+            }
         }
     }
 }
