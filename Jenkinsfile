@@ -2,46 +2,30 @@ pipeline {
     agent none
 
     options {
-        buildDiscarder(logRotator(numToKeepStr: '30'))
-        timeout(time: 40, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '40'))
+        timeout(time: 45, unit: 'MINUTES')
         timestamps()
     }
 
     environment {
-        DOCKER_USER         = "papesembene"
-        DOCKER_IMAGE_NAME   = "library-api"
-        KUBE_NAMESPACE      = "library"
-        DEPLOYMENT_NAME     = "library-api-deployment"
-        SKIP_BUILD_PUSH     = "false"
+        DOCKER_USER       = "papesembene"
+        DOCKER_IMAGE_NAME = "library-api"
+        KUBE_NAMESPACE    = "library"
+        DEPLOYMENT_NAME   = "library-api-deployment"
+        SKIP_BUILD_PUSH   = "false"
     }
 
     stages {
+
         stage('Prepare') {
             agent any
             steps {
                 checkout scm
                 script {
                     env.IMAGE_TAG    = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    env.FULL_IMAGE   = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${env.IMAGE_TAG}"
+                    env.FULL_IMAGE   = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
                     env.LATEST_IMAGE = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest"
-                    echo "Tag de cette build : ${env.IMAGE_TAG}"
-                }
-            }
-        }
-        // === le reste du pipeline reste exactement le même que la dernière version qui passait le parsing ===
-        stage('Build Maven') {
-            agent {
-                docker {
-                    image 'maven:3.9.9-eclipse-temurin-17-alpine'
-                    args '-v maven-repo:/root/.m2 --user root'
-                    reuseNode true
-                }
-            }
-            steps { sh 'mvn -B clean verify' }
-            post {
-                always {
-                    junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
-                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                    echo "Tag de build : ${IMAGE_TAG}"
                 }
             }
         }
@@ -57,20 +41,27 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     script {
-                        def exists = sh(script: '''
-                            echo "$PASS" | docker login -u "$USER" --password-stdin >/dev/null
-                            docker manifest inspect ${FULL_IMAGE} >/dev/null 2>&1 && echo true || echo false
-                        ''', returnStdout: true).trim()
-                        env.SKIP_BUILD_PUSH = (exists == 'true') ? 'true' : 'false'
-                        echo env.SKIP_BUILD_PUSH == 'true' ? 
-                            "Image déjà sur Docker Hub → skip build & deploy" : 
-                            "Nouvelle image à builder"
+                        def exists = sh(
+                            script: '''
+                                set +e
+                                echo "$PASS" | docker login -u "$USER" --password-stdin >/dev/null
+                                docker manifest inspect ${FULL_IMAGE} >/dev/null 2>&1
+                                echo $?
+                            ''',
+                            returnStdout: true
+                        ).trim()
+
+                        env.SKIP_BUILD_PUSH = (exists == "0") ? "true" : "false"
+
+                        echo (env.SKIP_BUILD_PUSH == "true" 
+                            ? "Image déjà publiée → skip build & deploy" 
+                            : "Nouvelle image → build & deploy")
                     }
                 }
             }
         }
 
-        stage('Build & Push Docker') {
+        stage('Build & Push Docker (Multi-stage)') {
             when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
             agent {
                 docker {
@@ -83,9 +74,15 @@ pipeline {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     sh '''
                         set -euo pipefail
-                        cp target/*.jar app.jar
+
                         echo "$PASS" | docker login -u "$USER" --password-stdin
-                        DOCKER_BUILDKIT=1 docker build --build-arg JAR_FILE=app.jar -t ${FULL_IMAGE} -t ${LATEST_IMAGE} --pull --no-cache .
+
+                        DOCKER_BUILDKIT=1 docker build \
+                            -t ${FULL_IMAGE} \
+                            -t ${LATEST_IMAGE} \
+                            --pull \
+                            .
+
                         docker push ${FULL_IMAGE}
                         docker push ${LATEST_IMAGE}
                     '''
@@ -105,10 +102,19 @@ pipeline {
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                     sh '''
                         set -euo pipefail
-                        kubectl apply -f k8s/ --recursive --prune -l app=library-api || true
-                        kubectl set image deployment/${DEPLOYMENT_NAME} library-api=${FULL_IMAGE} -n ${KUBE_NAMESPACE} --record
-                        kubectl rollout status deployment/${DEPLOYMENT_NAME} -n ${KUBE_NAMESPACE} --timeout=300s
-                        echo "DÉPLOIEMENT RÉUSSI !"
+
+                        kubectl apply -f k8s/ --recursive --prune -l app=library-api
+
+                        kubectl set image deployment/${DEPLOYMENT_NAME} \
+                            library-api=${FULL_IMAGE} \
+                            -n ${KUBE_NAMESPACE} \
+                            --record
+
+                        kubectl rollout status deployment/${DEPLOYMENT_NAME} \
+                            -n ${KUBE_NAMESPACE} \
+                            --timeout=300s
+
+                        echo "🚀 Déploiement terminé avec succès !"
                     '''
                 }
             }
@@ -116,16 +122,21 @@ pipeline {
     }
 
     post {
-        success { echo 'Tout est OK !' }
+        success { echo '🔥 Pipeline terminé avec succès !' }
+
         failure {
             script {
                 if (env.SKIP_BUILD_PUSH == 'false') {
                     withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                        sh 'kubectl rollout undo deployment/${DEPLOYMENT_NAME} -n ${KUBE_NAMESPACE} || true'
+                        sh '''
+                            kubectl rollout undo deployment/${DEPLOYMENT_NAME} \
+                                -n ${KUBE_NAMESPACE} || true
+                        '''
                     }
                 }
             }
         }
+
         always {
             node('built-in') {
                 sh 'docker image prune -f || true'
