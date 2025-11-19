@@ -13,12 +13,11 @@ pipeline {
         KUBE_NAMESPACE      = "library"
         DEPLOYMENT_NAME     = "library-api-deployment"
         SKIP_BUILD_PUSH     = "false"
-        // IMAGE_TAG & FULL_IMAGE calculated in Prepare stage (requires an agent)
     }
 
     stages {
         // =========================================================
-        // 0. Checkout + Calculate Git tag
+        // 0. Checkout + Calcul du tag image
         // =========================================================
         stage('Prepare') {
             agent {
@@ -33,14 +32,13 @@ pipeline {
                     env.IMAGE_TAG    = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.FULL_IMAGE   = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${env.IMAGE_TAG}"
                     env.LATEST_IMAGE = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest"
-                    echo "Build tag: ${env.IMAGE_TAG}"
-                    echo "Full image: ${env.FULL_IMAGE}"
+                    echo "Tag de cette build : ${env.IMAGE_TAG}"
                 }
             }
         }
 
         // =========================================================
-        // 1. Maven Build & Tests
+        // 1. Build & Tests Maven
         // =========================================================
         stage('Build Maven') {
             agent {
@@ -56,13 +54,14 @@ pipeline {
             post {
                 always {
                     junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
-                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true, allowEmptyResult: true
+                    // Simplifié : sans allowEmptyArchive pour éviter les erreurs de version
+                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
                 }
             }
         }
 
         // =========================================================
-        // 2. Check if Docker image already exists on Docker Hub
+        // 2. Vérifier si l'image existe déjà sur Docker Hub
         // =========================================================
         stage('Check Docker Image Exists') {
             agent {
@@ -78,32 +77,28 @@ pipeline {
                                                  passwordVariable: 'PASS')]) {
                     script {
                         def exists = sh(
-                            script: """
-                                echo "\$PASS" | docker login -u "\$USER" --password-stdin > /dev/null
-                                docker manifest inspect ${env.FULL_IMAGE} > /dev/null 2>&1 && echo 'true' || echo 'false'
-                            """,
+                            script: '''
+                                echo "$PASS" | docker login -u "$USER" --password-stdin >/dev/null
+                                docker manifest inspect ${FULL_IMAGE} >/dev/null 2>&1 && echo true || echo false
+                            ''',
                             returnStdout: true
                         ).trim()
 
                         env.SKIP_BUILD_PUSH = (exists == 'true') ? 'true' : 'false'
 
-                        if (env.SKIP_BUILD_PUSH == 'true') {
-                            echo "Image ${env.FULL_IMAGE} already exists on Docker Hub → skipping build & deploy"
-                        } else {
-                            echo "New image will be built: ${env.FULL_IMAGE}"
-                        }
+                        echo env.SKIP_BUILD_PUSH == 'true' ?
+                            "Image ${FULL_IMAGE} déjà présente → on skip build & deploy" :
+                            "Nouvelle image à construire : ${FULL_IMAGE}"
                     }
                 }
             }
         }
 
         // =========================================================
-        // 3. Build & Push Docker image (only if needed)
+        // 3. Build & Push Docker (seulement si nécessaire)
         // =========================================================
         stage('Build & Push Docker') {
-            when {
-                environment name: 'SKIP_BUILD_PUSH', value: 'false'
-            }
+            when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
             agent {
                 docker {
                     image 'docker:27.3.1-dind-alpine3.20'
@@ -118,33 +113,30 @@ pipeline {
                     sh '''
                         set -euo pipefail
 
-                        # Ensure JAR is in build context
                         cp target/*.jar app.jar
 
                         echo "$PASS" | docker login -u "$USER" --password-stdin
 
-                        DOCKER_BUILDKIT=1 docker build \
-                            --build-arg JAR_FILE=app.jar \
-                            -t ${FULL_IMAGE} \
-                            -t ${LATEST_IMAGE} \
+                        DOCKER_BUILDKIT=1 docker build \\
+                            --build-arg JAR_FILE=app.jar \\
+                            -t ${FULL_IMAGE} \\
+                            -t ${LATEST_IMAGE} \\
                             --pull --no-cache .
 
                         docker push ${FULL_IMAGE}
                         docker push ${LATEST_IMAGE}
 
-                        echo "Images pushed successfully!"
+                        echo "Images poussées avec succès !"
                     '''
                 }
             }
         }
 
         // =========================================================
-        // 4. Deploy to Kubernetes (only if image was built/pushed)
+        // 4. Déploiement Kubernetes
         // =========================================================
         stage('Deploy to Kubernetes') {
-            when {
-                environment name: 'SKIP_BUILD_PUSH', value: 'false'
-            }
+            when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
             agent {
                 docker {
                     image 'bitnami/kubectl:1.31'
@@ -158,16 +150,18 @@ pipeline {
 
                         kubectl apply -f k8s/ --recursive --prune -l app=library-api || true
 
-                        kubectl set image deployment/${DEPLOYMENT_NAME} \
-                            library-api=${FULL_IMAGE} \
+                        kubectl set image deployment/${DEPLOYMENT_NAME} \\
+                            library-api=${FULL_IMAGE} \\
                             -n ${KUBE_NAMESPACE} --record
 
-                        kubectl rollout status deployment/${DEPLOYMENT_NAME} \
+                        kubectl rollout status deployment/${DEPLOYMENT_NAME} \\
                             -n ${KUBE_NAMESPACE} --timeout=300s
 
-                        echo "DEPLOYMENT SUCCESSFUL!"
-                        echo "URL: http://$(kubectl get svc library-api-service -n ${KUBE_NAMESPACE} \
-                            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo 'no-external-ip')"
+                        echo "DÉPLOIEMENT RÉUSSI !"
+
+                        EXTERNAL_IP=$(kubectl get svc library-api-service -n ${KUBE_NAMESPACE} \
+                            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pas-d-ip-externe")
+                        echo "URL : http://$EXTERNAL_IP"
                     '''
                 }
             }
@@ -175,13 +169,11 @@ pipeline {
     }
 
     post {
-        success {
-            echo 'Pipeline completed successfully!'
-        }
+        success { echo 'Pipeline terminé avec succès !' }
         failure {
             script {
                 if (env.SKIP_BUILD_PUSH == 'false') {
-                    echo 'Rolling back deployment...'
+                    echo 'Rollback du déploiement...'
                     withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                         sh 'kubectl rollout undo deployment/${DEPLOYMENT_NAME} -n ${KUBE_NAMESPACE} || true'
                     }
@@ -191,11 +183,7 @@ pipeline {
         always {
             node('built-in') {
                 sh 'docker image prune -f || true'
-                cleanWs(
-                    cleanWhenSuccess: true,
-                    cleanWhenFailure: true,
-                    cleanWhenAborted: true
-                )
+                cleanWs()
             }
         }
     }
