@@ -26,6 +26,7 @@ pipeline {
         stage('Check & Build Docker Image') {
             steps {
                 unstash 'jar-built'
+                sh "cp target/*.jar app.jar"
                 script {
                     def imageExists = sh(script: "docker manifest inspect docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} >/dev/null 2>&1 && echo yes || echo no", returnStdout: true).trim()
                     if (imageExists == "yes") {
@@ -34,7 +35,7 @@ pipeline {
                     } else {
                         sh """
                             echo "Building Docker image..."
-                            docker build -t ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} --build-arg JAR_FILE=target/*.jar .
+                            docker build -t ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} --build-arg JAR_FILE=app.jar .
                             echo "Docker image built successfully."
                         """
                     }
@@ -113,6 +114,7 @@ pipeline {
         }
         always {
             sh "docker rmi ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} || true"
+            sh "rm -f app.jar || true"
             archiveArtifacts artifacts: 'target/surefire-reports/*.xml', allowEmptyArchive: true
         }
     }
