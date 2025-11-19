@@ -59,7 +59,7 @@ pipeline {
         // 2. Vérifier si l'image existe déjà sur Docker Hub
         // =========================================================
         stage('Check Docker Image Exists') {
-            agent { docker { image 'docker:27.3.1-dind-alpine3.20' args '--privileged' } }
+            agent { docker { image: 'docker:27.3.1-dind-alpine3.20', args: '--privileged' } }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     script {
@@ -88,7 +88,7 @@ pipeline {
         // =========================================================
         stage('Build & Push Docker') {
             when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
-            agent { docker { image 'docker:27.3.1-dind-alpine3.20' args '--privileged' } }
+            agent { docker { image: 'docker:27.3.1-dind-alpine3.20', args: '--privileged' } }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     sh '''
@@ -120,39 +120,25 @@ pipeline {
         // =========================================================
         stage('Deploy to Kubernetes') {
             when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
-            agent {
-                kubernetes {
-                    yaml '''
-                    apiVersion: v1
-                    kind: Pod
-                    spec:
-                      containers:
-                      - name: kubectl
-                        image: bitnami/kubectl:1.31
-                        command: ["sleep", "3600"]
-                    '''
-                }
-            }
+            agent { docker { image: 'bitnami/kubectl:1.31' } }
             steps {
-                container('kubectl') {
-                    withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                        sh '''
-                            set -euo pipefail
+                withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        set -euo pipefail
 
-                            kubectl apply -f k8s/ --recursive --prune -l app=library-api || true
+                        kubectl apply -f k8s/ --recursive --prune -l app=library-api || true
 
-                            kubectl set image deployment/${DEPLOYMENT_NAME} \
-                                library-api=${FULL_IMAGE} \
-                                -n ${KUBE_NAMESPACE} --record
+                        kubectl set image deployment/${DEPLOYMENT_NAME} \
+                            library-api=${FULL_IMAGE} \
+                            -n ${KUBE_NAMESPACE} --record
 
-                            kubectl rollout status deployment/${DEPLOYMENT_NAME} \
-                                -n ${KUBE_NAMESPACE} --timeout=300s
+                        kubectl rollout status deployment/${DEPLOYMENT_NAME} \
+                            -n ${KUBE_NAMESPACE} --timeout=300s
 
-                            echo "DÉPLOIEMENT RÉUSSI !"
-                            echo "URL : http://$(kubectl get svc library-api-service -n ${KUBE_NAMESPACE} \
-                                -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo 'pas-d-ip-externe')"
-                        '''
-                    }
+                        echo "DÉPLOIEMENT RÉUSSI !"
+                        echo "URL : http://$(kubectl get svc library-api-service -n ${KUBE_NAMESPACE} \
+                            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo 'pas-d-ip-externe')"
+                    '''
                 }
             }
         }
