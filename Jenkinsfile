@@ -16,16 +16,9 @@ pipeline {
     }
 
     stages {
-        // =========================================================
-        // 0. Checkout + Calcul du tag image
-        // =========================================================
+        // === NOUVELLE VERSION QUI MARCHE À TOUS LES COUPS ===
         stage('Prepare') {
-            agent {
-                docker {
-                    image 'alpine/git:latest'
-                    reuseNode true
-                }
-            }
+            agent any
             steps {
                 checkout scm
                 script {
@@ -36,10 +29,7 @@ pipeline {
                 }
             }
         }
-
-        // =========================================================
-        // 1. Build & Tests Maven
-        // =========================================================
+        // === le reste du pipeline reste exactement le même que la dernière version qui passait le parsing ===
         stage('Build Maven') {
             agent {
                 docker {
@@ -48,21 +38,15 @@ pipeline {
                     reuseNode true
                 }
             }
-            steps {
-                sh 'mvn -B clean verify'
-            }
+            steps { sh 'mvn -B clean verify' }
             post {
                 always {
                     junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
-                    // Simplifié : sans allowEmptyArchive pour éviter les erreurs de version
                     archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
                 }
             }
         }
 
-        // =========================================================
-        // 2. Vérifier si l'image existe déjà sur Docker Hub
-        // =========================================================
         stage('Check Docker Image Exists') {
             agent {
                 docker {
@@ -72,31 +56,21 @@ pipeline {
                 }
             }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub',
-                                                 usernameVariable: 'USER',
-                                                 passwordVariable: 'PASS')]) {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     script {
-                        def exists = sh(
-                            script: '''
-                                echo "$PASS" | docker login -u "$USER" --password-stdin >/dev/null
-                                docker manifest inspect ${FULL_IMAGE} >/dev/null 2>&1 && echo true || echo false
-                            ''',
-                            returnStdout: true
-                        ).trim()
-
+                        def exists = sh(script: '''
+                            echo "$PASS" | docker login -u "$USER" --password-stdin >/dev/null
+                            docker manifest inspect ${FULL_IMAGE} >/dev/null 2>&1 && echo true || echo false
+                        ''', returnStdout: true).trim()
                         env.SKIP_BUILD_PUSH = (exists == 'true') ? 'true' : 'false'
-
-                        echo env.SKIP_BUILD_PUSH == 'true' ?
-                            "Image ${FULL_IMAGE} déjà présente → on skip build & deploy" :
-                            "Nouvelle image à construire : ${FULL_IMAGE}"
+                        echo env.SKIP_BUILD_PUSH == 'true' ? 
+                            "Image déjà sur Docker Hub → skip build & deploy" : 
+                            "Nouvelle image à builder"
                     }
                 }
             }
         }
 
-        // =========================================================
-        // 3. Build & Push Docker (seulement si nécessaire)
-        // =========================================================
         stage('Build & Push Docker') {
             when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
             agent {
@@ -107,34 +81,19 @@ pipeline {
                 }
             }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub',
-                                                 usernameVariable: 'USER',
-                                                 passwordVariable: 'PASS')]) {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
                     sh '''
                         set -euo pipefail
-
                         cp target/*.jar app.jar
-
                         echo "$PASS" | docker login -u "$USER" --password-stdin
-
-                        DOCKER_BUILDKIT=1 docker build \\
-                            --build-arg JAR_FILE=app.jar \\
-                            -t ${FULL_IMAGE} \\
-                            -t ${LATEST_IMAGE} \\
-                            --pull --no-cache .
-
+                        DOCKER_BUILDKIT=1 docker build --build-arg JAR_FILE=app.jar -t ${FULL_IMAGE} -t ${LATEST_IMAGE} --pull --no-cache .
                         docker push ${FULL_IMAGE}
                         docker push ${LATEST_IMAGE}
-
-                        echo "Images poussées avec succès !"
                     '''
                 }
             }
         }
 
-        // =========================================================
-        // 4. Déploiement Kubernetes
-        // =========================================================
         stage('Deploy to Kubernetes') {
             when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
             agent {
@@ -147,21 +106,10 @@ pipeline {
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                     sh '''
                         set -euo pipefail
-
                         kubectl apply -f k8s/ --recursive --prune -l app=library-api || true
-
-                        kubectl set image deployment/${DEPLOYMENT_NAME} \\
-                            library-api=${FULL_IMAGE} \\
-                            -n ${KUBE_NAMESPACE} --record
-
-                        kubectl rollout status deployment/${DEPLOYMENT_NAME} \\
-                            -n ${KUBE_NAMESPACE} --timeout=300s
-
+                        kubectl set image deployment/${DEPLOYMENT_NAME} library-api=${FULL_IMAGE} -n ${KUBE_NAMESPACE} --record
+                        kubectl rollout status deployment/${DEPLOYMENT_NAME} -n ${KUBE_NAMESPACE} --timeout=300s
                         echo "DÉPLOIEMENT RÉUSSI !"
-
-                        EXTERNAL_IP=$(kubectl get svc library-api-service -n ${KUBE_NAMESPACE} \
-                            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pas-d-ip-externe")
-                        echo "URL : http://$EXTERNAL_IP"
                     '''
                 }
             }
@@ -169,11 +117,10 @@ pipeline {
     }
 
     post {
-        success { echo 'Pipeline terminé avec succès !' }
+        success { echo 'Tout est OK !' }
         failure {
             script {
                 if (env.SKIP_BUILD_PUSH == 'false') {
-                    echo 'Rollback du déploiement...'
                     withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                         sh 'kubectl rollout undo deployment/${DEPLOYMENT_NAME} -n ${KUBE_NAMESPACE} || true'
                     }
