@@ -1,0 +1,11 @@
+com/example/demo/Dto/UserDto$UserDtoBuilder.class
+com/example/demo/Dto/RoleDto.class
+com/example/demo/Repository/RoleRepository.class
+com/example/demo/model/Role.class
+com/example/demo/Dto/UserDto.class
+com/example/demo/Service/UserService.class
+com/example/demo/DemoApplication.class
+com/example/demo/Contoller/UserController.class
+com/example/demo/model/User.class
+com/example/demo/Repository/UserRepository.class
+com/example/demo/model/User$UserBuilder.class

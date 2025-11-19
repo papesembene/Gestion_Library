@@ -2,6 +2,7 @@ target/
 *.log
 *.class
 *.jar
+!app.jar
 *.iml
 .idea/
 .git/

@@ -41,7 +41,7 @@ pipeline {
                 }
             }
             steps {
-                sh 'mvn -B clean package -DskipTests'
+                sh 'mvn -B clean package -DskipTests -T 1C'
             }
             post {
                 always {
@@ -93,9 +93,8 @@ pipeline {
                                 # Login Docker Hub (token permanent)
                                 echo "$PASS" | docker login -u "$USER" --password-stdin
 
-                                # Build multi-stage Dockerfile (production-grade)
+                                # Build Dockerfile
                                 DOCKER_BUILDKIT=1 docker build \
-                                    --build-arg JAR_FILE=app.jar \
                                     -t ${FULL_IMAGE} \
                                     -t ${LATEST_IMAGE} \
                                     --progress=plain \
