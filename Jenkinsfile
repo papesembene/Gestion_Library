@@ -22,7 +22,7 @@ pipeline {
         stage('Prepare') {
             agent any
             steps {
-                checkout scm
+                checkout([$class: 'GitSCM', branches: [[name: '*/main']], extensions: [[$class: 'CloneOption', shallow: true, depth: 1]], userRemoteConfigs: [[url: env.GIT_URL]]])
                 script {
                     env.IMAGE_TAG    = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.FULL_IMAGE   = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${env.IMAGE_TAG}"
