@@ -29,10 +29,13 @@ pipeline {
                 script {
                     def imageExists = sh(script: "docker manifest inspect docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} >/dev/null 2>&1 && echo yes || echo no", returnStdout: true).trim()
                     if (imageExists == "yes") {
-                        echo "✅ Docker image already exists for this commit. Skipping build."
+                        echo "✅ Docker image already exists for this commit. Skipping build and push."
+                        env.SKIP_PUSH = 'true'
                     } else {
                         sh """
+                            echo "Building Docker image..."
                             docker build -t ${DOCKER_IMAGE_NAME}:${IMAGE_TAG} --build-arg JAR_FILE=target/*.jar .
+                            echo "Docker image built successfully."
                         """
                     }
                 }
@@ -40,6 +43,9 @@ pipeline {
         }
 
         stage('Push Docker Image') {
+            when {
+                expression { env.SKIP_PUSH != 'true' }
+            }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     script {
@@ -59,6 +65,9 @@ pipeline {
         }
 
         stage('🚀 Deploy to Kubernetes') {
+            when {
+                expression { env.SKIP_PUSH != 'true' }
+            }
             steps {
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                     script {
