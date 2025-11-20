@@ -12,10 +12,6 @@ pipeline {
         KUBE_NAMESPACE = 'library'
         // Nom du déploiement Kubernetes
         DEPLOYMENT_NAME = 'library-api-deployment'
-        // Tag de l'image basé sur le commit Git (pour versioning)
-        IMAGE_TAG = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-        // Nom complet de l'image avec tag
-        FULL_IMAGE = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
     }
 
     stages {
@@ -24,11 +20,23 @@ pipeline {
             steps {
                 // Clone le repository Git (branche main par défaut)
                 checkout scm
+                // Définit le tag de l'image basé sur le commit Git
+                script {
+                    env.IMAGE_TAG = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.FULL_IMAGE = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${env.IMAGE_TAG}"
+                }
             }
         }
 
         // Étape 2: Construction de l'application Java avec Maven
         stage('Build Application') {
+            agent {
+                docker {
+                    image 'maven:3.9.9-eclipse-temurin-17-alpine'
+                    args '-v maven-repo:/root/.m2'
+                    reuseNode true
+                }
+            }
             steps {
                 // Utilise Maven pour compiler et packager l'application
                 // -B : mode batch (non interactif)
