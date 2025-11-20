@@ -87,6 +87,10 @@ pipeline {
                 // Utilise le fichier kubeconfig pour accéder au cluster K8s
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
                     sh """
+                        # Configure kubectl avec le kubeconfig fourni
+                        mkdir -p ~/.kube
+                        cp \$KUBECONFIG ~/.kube/config
+
                         # Applique les manifests Kubernetes (namespace, service, deployment, etc.)
                         kubectl apply -f k8s/ --recursive
 
