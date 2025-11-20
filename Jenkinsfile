@@ -1,142 +1,106 @@
 pipeline {
-    agent none
+    // Agent global pour tous les stages (utilise un agent Jenkins avec Docker installé)
+    agent any
 
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '40'))
-        timeout(time: 45, unit: 'MINUTES')
-        timestamps()
-    }
-
+    // Variables d'environnement essentielles pour le déploiement
     environment {
-        DOCKER_USER       = "papesembene"
-        DOCKER_IMAGE_NAME = "library-api"
-        KUBE_NAMESPACE    = "library"
-        DEPLOYMENT_NAME   = "library-api-deployment"
-        IMAGE_TAG         = ""
-        FULL_IMAGE        = ""
-        LATEST_IMAGE      = ""
+        // Nom d'utilisateur Docker Hub (remplacez par le vôtre)
+        DOCKER_USER = 'papesembene'
+        // Nom de l'image Docker
+        DOCKER_IMAGE_NAME = 'library-api'
+        // Namespace Kubernetes
+        KUBE_NAMESPACE = 'library'
+        // Nom du déploiement Kubernetes
+        DEPLOYMENT_NAME = 'library-api-deployment'
+        // Tag de l'image basé sur le commit Git (pour versioning)
+        IMAGE_TAG = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+        // Nom complet de l'image avec tag
+        FULL_IMAGE = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
     }
 
     stages {
-
-        stage('Prepare') {
-            agent any
+        // Étape 1: Récupération du code source depuis Git
+        stage('Checkout Code') {
             steps {
-                checkout([$class: 'GitSCM', branches: [[name: '*/main']], extensions: [[$class: 'CloneOption', shallow: true, depth: 1]], userRemoteConfigs: [[url: env.GIT_URL]]])
+                // Clone le repository Git (branche main par défaut)
+                checkout scm
+            }
+        }
+
+        // Étape 2: Construction de l'application Java avec Maven
+        stage('Build Application') {
+            steps {
+                // Utilise Maven pour compiler et packager l'application
+                // -B : mode batch (non interactif)
+                // -DskipTests : ignore les tests pour accélérer le build
+                sh 'mvn -B clean package -DskipTests'
+            }
+        }
+
+        // Étape 3: Construction de l'image Docker
+        stage('Build Docker Image') {
+            steps {
                 script {
-                    env.IMAGE_TAG    = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    env.FULL_IMAGE   = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:${env.IMAGE_TAG}"
-                    env.LATEST_IMAGE = "docker.io/${DOCKER_USER}/${DOCKER_IMAGE_NAME}:latest"
-                    echo "Tag de build : ${env.IMAGE_TAG}"
+                    // Construit l'image Docker à partir du Dockerfile
+                    // Utilise BuildKit pour une construction plus rapide
+                    sh "DOCKER_BUILDKIT=1 docker build -t ${FULL_IMAGE} ."
                 }
             }
         }
 
-        stage('Build Maven') {
-            agent {
-                docker {
-                    image 'maven:3.9.9-eclipse-temurin-17-alpine'
-                    args '-v maven-repo:/root/.m2 --user root'
-                    reuseNode true
-                }
-            }
+        // Étape 4: Push de l'image vers Docker Hub
+        stage('Push Docker Image') {
             steps {
-                sh 'mvn -B clean package -DskipTests -T 1C'
-            }
-            post {
-                always {
-                    junit testResults: 'target/surefire-reports/*.xml', allowEmptyResults: true
-                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
-                }
-            }
-        }
-
-        stage('Build & Push Docker (Multi-stage)') {
-            agent any
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub',
-                    usernameVariable: 'USER',
-                    passwordVariable: 'PASS'
-                )]) {
-                    script {
-                        def exists = sh(
-                            script: """
-                                echo "$PASS" | docker login -u "$USER" --password-stdin > /dev/null
-                                docker manifest inspect ${env.FULL_IMAGE} > /dev/null 2>&1 && echo true || echo false
-                            """,
-                            returnStdout: true
-                        ).trim()
-
-                        env.SKIP_BUILD_PUSH = exists == 'true' ? 'true' : 'false'
-
-                        if (env.SKIP_BUILD_PUSH == 'true') {
-                            echo "Image ${env.FULL_IMAGE} déjà sur Docker Hub → skip build & déploiement"
-                        } else {
-                            echo "Nouvelle image à construire : ${env.FULL_IMAGE}"
-                        }
-                    }
-                }
                 script {
-                    if (env.SKIP_BUILD_PUSH == 'false') {
-                        withCredentials([usernamePassword(
-                            credentialsId: 'dockerhub',
-                            usernameVariable: 'USER',
-                            passwordVariable: 'PASS'
-                        )]) {
-                            sh '''
-                                set -euo pipefail
-
-                                # Copier le JAR pour éviter .dockerignore
-                                cp target/*.jar app.jar
-
-                                # Login Docker Hub (token permanent)
-                                echo "$PASS" | docker login -u "$USER" --password-stdin
-
-                                # Build Dockerfile
-                                DOCKER_BUILDKIT=1 docker build \
-                                    -t ${FULL_IMAGE} \
-                                    -t ${LATEST_IMAGE} \
-                                    --progress=plain \
-                                    .
-
-                                # Push images
-                                docker push ${FULL_IMAGE}
-                                docker push ${LATEST_IMAGE}
-                            '''
-                        }
+                    // Authentification Docker Hub avec les credentials Jenkins
+                    withCredentials([usernamePassword(
+                        credentialsId: 'dockerhub',
+                        usernameVariable: 'USER',
+                        passwordVariable: 'PASS'
+                    )]) {
+                        // Login et push de l'image
+                        sh """
+                            echo "\$PASS" | docker login -u "\$USER" --password-stdin
+                            docker push ${FULL_IMAGE}
+                        """
                     }
                 }
             }
         }
 
+        // Étape 5: Déploiement sur Kubernetes
         stage('Deploy to Kubernetes') {
-            when { environment name: 'SKIP_BUILD_PUSH', value: 'false' }
-            agent any
             steps {
+                // Utilise le fichier kubeconfig pour accéder au cluster K8s
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
-                    sh '''
-                        set -euo pipefail
-
+                    sh """
+                        # Applique les manifests Kubernetes (namespace, service, deployment, etc.)
                         kubectl apply -f k8s/ --recursive
-                        kubectl set image deployment/${DEPLOYMENT_NAME} \
-                            ${DOCKER_IMAGE_NAME}=${FULL_IMAGE} \
-                            -n ${KUBE_NAMESPACE} \
+
+                        # Met à jour l'image dans le déploiement
+                        kubectl set image deployment/${DEPLOYMENT_NAME} \\
+                            ${DOCKER_IMAGE_NAME}=${FULL_IMAGE} \\
+                            -n ${KUBE_NAMESPACE} \\
                             --record
-                        kubectl rollout status deployment/${DEPLOYMENT_NAME} \
-                            -n ${KUBE_NAMESPACE} \
+
+                        # Attend que le rollout soit terminé (timeout 5 minutes)
+                        kubectl rollout status deployment/${DEPLOYMENT_NAME} \\
+                            -n ${KUBE_NAMESPACE} \\
                             --timeout=300s
 
-                        echo "✅ Déploiement terminé"
-                    '''
+                        echo "✅ Déploiement réussi sur Kubernetes"
+                    """
                 }
             }
         }
     }
 
+    // Actions post-build (toujours exécutées)
     post {
         always {
+            // Nettoie les images Docker non utilisées pour économiser de l'espace
             sh 'docker image prune -f || true'
+            // Nettoie le workspace Jenkins
             cleanWs()
         }
     }
