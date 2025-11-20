@@ -50,8 +50,7 @@ pipeline {
             steps {
                 script {
                     // Construit l'image Docker à partir du Dockerfile
-                    // Utilise BuildKit pour une construction plus rapide
-                    sh "DOCKER_BUILDKIT=1 docker build -t ${FULL_IMAGE} ."
+                    sh "docker build -t ${FULL_IMAGE} ."
                 }
             }
         }
