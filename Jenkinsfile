@@ -77,6 +77,12 @@ pipeline {
 
         // Étape 5: Déploiement sur Kubernetes
         stage('Deploy to Kubernetes') {
+            agent {
+                docker {
+                    image 'alpine/k8s:1.24.9'
+                    reuseNode true
+                }
+            }
             steps {
                 // Utilise le fichier kubeconfig pour accéder au cluster K8s
                 withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
