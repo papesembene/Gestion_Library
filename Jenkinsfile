@@ -86,30 +86,32 @@ pipeline {
             }
             steps {
                 // Utilise le fichier kubeconfig pour accéder au cluster K8s
-                sh """
-                    # Configure kubectl avec le kubeconfig fourni
-                    mkdir -p ~/.kube
-                    cp kubeconfig-embedded.yaml ~/.kube/config
+                withCredentials([file(credentialsId: 'kubeconfig-prod', variable: 'KUBECONFIG')]) {
+                    sh """
+                        # Configure kubectl avec le kubeconfig fourni
+                        mkdir -p ~/.kube
+                        cp \$KUBECONFIG ~/.kube/config
 
-                    # Vérifie la connectivité au cluster
-                    kubectl cluster-info
+                        # Vérifie la connectivité au cluster
+                        kubectl cluster-info
 
-                    # Applique les manifests Kubernetes (namespace, service, deployment, etc.)
-                    kubectl apply -f k8s/ --recursive
+                        # Applique les manifests Kubernetes (namespace, service, deployment, etc.)
+                        kubectl apply -f k8s/ --recursive
 
-                    # Met à jour l'image dans le déploiement
-                    kubectl set image deployment/${DEPLOYMENT_NAME} \\
-                        ${DOCKER_IMAGE_NAME}=${FULL_IMAGE} \\
-                        -n ${KUBE_NAMESPACE} \\
-                        --record
+                        # Met à jour l'image dans le déploiement
+                        kubectl set image deployment/${DEPLOYMENT_NAME} \\
+                            ${DOCKER_IMAGE_NAME}=${FULL_IMAGE} \\
+                            -n ${KUBE_NAMESPACE} \\
+                            --record
 
-                    # Attend que le rollout soit terminé (timeout 5 minutes)
-                    kubectl rollout status deployment/${DEPLOYMENT_NAME} \\
-                        -n ${KUBE_NAMESPACE} \\
-                        --timeout=300s
+                        # Attend que le rollout soit terminé (timeout 5 minutes)
+                        kubectl rollout status deployment/${DEPLOYMENT_NAME} \\
+                            -n ${KUBE_NAMESPACE} \\
+                            --timeout=300s
 
-                    echo "✅ Déploiement réussi sur Kubernetes"
-                """
+                        echo "✅ Déploiement réussi sur Kubernetes"
+                    """
+                }
             }
         }
     }
